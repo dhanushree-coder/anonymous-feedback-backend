@@ -1,0 +1,7 @@
+flask
+flask-cors
+flask-bcrypt
+flask-mail
+mysql-connector-python
+itsdangerous
+gunicorn
