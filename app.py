@@ -14,9 +14,7 @@ bcrypt = Bcrypt(app)
 app.config['SECRET_KEY'] = 'super-secret-key'
 
 # ================= BASE URL =================
-# Local → http://127.0.0.1:5000
-# Railway → https://<your-backend>.up.railway.app
-BASE_URL = "https://your-backend-name.up.railway.app"
+BASE_URL = "https://web-production-315e.up.railway.app"
 
 # ================= MAIL CONFIG =================
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'

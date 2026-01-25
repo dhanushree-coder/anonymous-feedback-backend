@@ -1,12 +1,13 @@
 from flask_mail import Message
 from itsdangerous import URLSafeTimedSerializer
-from flask import url_for
+
+BASE_URL = "https://web-production-315e.up.railway.app"
 
 def send_verification_email(mail, app, email):
     serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
     token = serializer.dumps(email, salt="email-verify")
 
-    link = f"http://localhost:5000/verify/{token}"
+    link = f"{BASE_URL}/verify/{token}"
 
     msg = Message(
         subject="Verify Your Admin Account",
