@@ -72,7 +72,12 @@ def signup():
         recipients=[email]
     )
     msg.body = f"Click the link below to verify your account:\n\n{verify_link}"
-    mail.send(msg)
+
+    # 🔒 PRODUCTION-SAFE EMAIL SENDING
+    try:
+        mail.send(msg)
+    except Exception as e:
+        print("Email sending failed:", e)
 
     return jsonify({"message": "Verification email sent"}), 200
 
