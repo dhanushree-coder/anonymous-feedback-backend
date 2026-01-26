@@ -16,13 +16,13 @@ app.config['SECRET_KEY'] = 'super-secret-key'
 # ================= BASE URL =================
 BASE_URL = "https://web-production-315e.up.railway.app"
 
-# ================= SENDGRID MAIL CONFIG =================
+# ================= SENDGRID CONFIG =================
 app.config['MAIL_SERVER'] = 'smtp.sendgrid.net'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = 'apikey'
 app.config['MAIL_PASSWORD'] = os.getenv("SENDGRID_API_KEY")
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")  # MUST be verified sender
 
 mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
@@ -40,7 +40,8 @@ def get_db_connection():
 # ================= SIGNUP =================
 @app.route("/signup", methods=["POST"])
 def signup():
-    data = request.json
+    data = request.get_json()
+
     name = data["name"]
     email = data["email"]
     username = data["username"]
@@ -52,7 +53,6 @@ def signup():
     db = get_db_connection()
     cursor = db.cursor()
 
-    # check duplicate email or username
     cursor.execute(
         "SELECT id FROM admins WHERE email=%s OR username=%s",
         (email, username)
@@ -62,12 +62,12 @@ def signup():
         db.close()
         return jsonify({"error": "Email or Username already exists"}), 400
 
-    # insert UNVERIFIED user
     cursor.execute("""
         INSERT INTO admins (name, email, username, password_hash, is_verified)
         VALUES (%s, %s, %s, %s, 0)
     """, (name, email, username, hashed_password))
     db.commit()
+
     cursor.close()
     db.close()
 
@@ -82,10 +82,10 @@ def signup():
     try:
         mail.send(msg)
     except Exception as e:
-        print("Email send failed:", e)
-        return jsonify({"error": "Email service unavailable"}), 500
+        print("EMAIL ERROR:", e)
+        return jsonify({"error": "Verification email failed"}), 500
 
-    return jsonify({"message": "Verification email sent"}), 200
+    return jsonify({"success": True}), 200
 
 # ================= EMAIL VERIFY =================
 @app.route("/verify/<token>")
@@ -110,17 +110,15 @@ def verify_email(token):
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
 def login():
-    data = request.json
+    data = request.get_json()
     username = data["username"]
     password = data["password"]
 
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
-    cursor.execute(
-        "SELECT * FROM admins WHERE username=%s",
-        (username,)
-    )
+    cursor.execute("SELECT * FROM admins WHERE username=%s", (username,))
     user = cursor.fetchone()
+
     cursor.close()
     db.close()
 
