@@ -13,16 +13,15 @@ bcrypt = Bcrypt(app)
 # ================= CONFIG =================
 app.config['SECRET_KEY'] = 'super-secret-key'
 
-# ================= BASE URL =================
 BASE_URL = "https://web-production-315e.up.railway.app"
 
-# ================= SENDGRID CONFIG =================
+# ================= SENDGRID =================
 app.config['MAIL_SERVER'] = 'smtp.sendgrid.net'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = 'apikey'
 app.config['MAIL_PASSWORD'] = os.getenv("SENDGRID_API_KEY")
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")  # MUST be verified sender
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")
 
 mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
@@ -47,9 +46,6 @@ def signup():
     username = data["username"]
     password = data["password"]
 
-    hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
-    token = serializer.dumps(email, salt="email-confirm")
-
     db = get_db_connection()
     cursor = db.cursor()
 
@@ -62,14 +58,15 @@ def signup():
         db.close()
         return jsonify({"error": "Email or Username already exists"}), 400
 
+    hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+    token = serializer.dumps(email, salt="email-confirm")
+
+    # TEMP account (pending verification)
     cursor.execute("""
         INSERT INTO admins (name, email, username, password_hash, is_verified)
-        VALUES (%s, %s, %s, %s, 0)
+        VALUES (%s, %s, %s, %s, -1)
     """, (name, email, username, hashed_password))
     db.commit()
-
-    cursor.close()
-    db.close()
 
     verify_link = f"{BASE_URL}/verify/{token}"
 
@@ -82,12 +79,17 @@ def signup():
     try:
         mail.send(msg)
     except Exception as e:
-        print("EMAIL ERROR:", e)
-        return jsonify({"error": "Verification email failed"}), 500
+        cursor.execute("DELETE FROM admins WHERE email=%s", (email,))
+        db.commit()
+        cursor.close()
+        db.close()
+        return jsonify({"error": "Email delivery failed"}), 500
 
+    cursor.close()
+    db.close()
     return jsonify({"success": True}), 200
 
-# ================= EMAIL VERIFY =================
+# ================= VERIFY =================
 @app.route("/verify/<token>")
 def verify_email(token):
     try:
@@ -98,7 +100,7 @@ def verify_email(token):
     db = get_db_connection()
     cursor = db.cursor()
     cursor.execute(
-        "UPDATE admins SET is_verified=1 WHERE email=%s",
+        "UPDATE admins SET is_verified=1 WHERE email=%s AND is_verified=-1",
         (email,)
     )
     db.commit()
@@ -118,14 +120,13 @@ def login():
     cursor = db.cursor(dictionary=True)
     cursor.execute("SELECT * FROM admins WHERE username=%s", (username,))
     user = cursor.fetchone()
-
     cursor.close()
     db.close()
 
     if not user:
         return jsonify({"error": "Invalid credentials"}), 401
 
-    if not user["is_verified"]:
+    if user["is_verified"] != 1:
         return jsonify({"error": "Please verify your email first"}), 403
 
     if not bcrypt.check_password_hash(user["password_hash"], password):
