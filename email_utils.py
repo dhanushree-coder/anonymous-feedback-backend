@@ -3,10 +3,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 BASE_URL = "https://web-production-315e.up.railway.app"
 
-def send_verification_email(mail, app, email):
-    serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-    token = serializer.dumps(email, salt="email-verify")
-
+def send_verification_email(mail, app, token, email):
     link = f"{BASE_URL}/verify/{token}"
 
     msg = Message(

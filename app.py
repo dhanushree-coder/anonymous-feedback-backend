@@ -4,7 +4,6 @@ from flask_bcrypt import Bcrypt
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 import mysql.connector
-import os
 
 app = Flask(__name__)
 CORS(app)
@@ -47,23 +46,16 @@ def signup():
     password = data["password"]
 
     hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
-    token = serializer.dumps(email, salt="email-confirm")
 
-    db = get_db_connection()
-    cursor = db.cursor()
+    # 🔐 Store signup data INSIDE token (NOT in DB)
+    token_data = {
+        "name": name,
+        "email": email,
+        "username": username,
+        "password": hashed_password
+    }
 
-    try:
-        cursor.execute("""
-            INSERT INTO admins (name, email, username, password_hash, is_verified)
-            VALUES (%s, %s, %s, %s, 0)
-        """, (name, email, username, hashed_password))
-        db.commit()
-    except mysql.connector.Error:
-        return jsonify({"error": "Email or Username already exists"}), 400
-    finally:
-        cursor.close()
-        db.close()
-
+    token = serializer.dumps(token_data, salt="email-confirm")
     verify_link = f"{BASE_URL}/verify/{token}"
 
     msg = Message(
@@ -73,30 +65,44 @@ def signup():
     )
     msg.body = f"Click the link below to verify your account:\n\n{verify_link}"
 
-    # 🔒 PRODUCTION-SAFE EMAIL SENDING
     try:
         mail.send(msg)
+        return jsonify({"message": "Verification email sent"}), 200
     except Exception as e:
         print("Email sending failed:", e)
+        return jsonify({"error": "Unable to send verification email"}), 500
 
-    return jsonify({"message": "Verification email sent"}), 200
 
 # ================= EMAIL VERIFY =================
 @app.route("/verify/<token>")
 def verify_email(token):
     try:
-        email = serializer.loads(token, salt="email-confirm", max_age=3600)
+        data = serializer.loads(token, salt="email-confirm", max_age=3600)
     except:
-        return "Verification link expired", 400
+        return "Verification link expired or invalid", 400
 
     db = get_db_connection()
     cursor = db.cursor()
-    cursor.execute("UPDATE admins SET is_verified=1 WHERE email=%s", (email,))
-    db.commit()
-    cursor.close()
-    db.close()
+
+    try:
+        cursor.execute("""
+            INSERT INTO admins (name, email, username, password_hash, is_verified)
+            VALUES (%s, %s, %s, %s, 1)
+        """, (
+            data["name"],
+            data["email"],
+            data["username"],
+            data["password"]
+        ))
+        db.commit()
+    except mysql.connector.Error:
+        return "Account already exists or verified", 400
+    finally:
+        cursor.close()
+        db.close()
 
     return redirect(f"{BASE_URL}/email-verified.html")
+
 
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
@@ -122,6 +128,7 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     return jsonify({"message": "Login successful"}), 200
+
 
 if __name__ == "__main__":
     app.run(debug=True)
