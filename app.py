@@ -61,10 +61,10 @@ def signup():
     hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
     token = serializer.dumps(email, salt="email-confirm")
 
-    # TEMP account (pending verification)
+    # TEMP account (pending verification) -> use 0 (not verified) to match schema
     cursor.execute("""
         INSERT INTO admins (name, email, username, password_hash, is_verified)
-        VALUES (%s, %s, %s, %s, -1)
+        VALUES (%s, %s, %s, %s, 0)
     """, (name, email, username, hashed_password))
     db.commit()
 
@@ -79,6 +79,7 @@ def signup():
     try:
         mail.send(msg)
     except Exception as e:
+        print("Email send failed:", e)
         cursor.execute("DELETE FROM admins WHERE email=%s", (email,))
         db.commit()
         cursor.close()
@@ -100,14 +101,15 @@ def verify_email(token):
     db = get_db_connection()
     cursor = db.cursor()
     cursor.execute(
-        "UPDATE admins SET is_verified=1 WHERE email=%s AND is_verified=-1",
+        "UPDATE admins SET is_verified=1 WHERE email=%s AND is_verified=0",
         (email,)
     )
     db.commit()
     cursor.close()
     db.close()
 
-    return redirect(f"{BASE_URL}/email-verified.html")
+    # Since your frontend HTML is local, just show a plain success message
+    return "Email verified successfully. You can close this tab and login in your app.", 200
 
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
