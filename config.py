@@ -1,9 +1,12 @@
+import os
+
 class Config:
     SECRET_KEY = "super-secret-key"
 
-    # Email config (Gmail)
-    MAIL_SERVER = "smtp.gmail.com"
+    # SendGrid Email Config
+    MAIL_SERVER = "smtp.sendgrid.net"
     MAIL_PORT = 587
     MAIL_USE_TLS = True
-    MAIL_USERNAME = "feedbacksystembiascontrol@gmail.com"
-    MAIL_PASSWORD = "qyyx rvhh kfgv puyv"
+    MAIL_USERNAME = "apikey"
+    MAIL_PASSWORD = os.getenv("SENDGRID_API_KEY")
+    MAIL_DEFAULT_SENDER = os.getenv("MAIL_SENDER")

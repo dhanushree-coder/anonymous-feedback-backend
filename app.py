@@ -4,6 +4,7 @@ from flask_bcrypt import Bcrypt
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 import mysql.connector
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -15,12 +16,13 @@ app.config['SECRET_KEY'] = 'super-secret-key'
 # ================= BASE URL =================
 BASE_URL = "https://web-production-315e.up.railway.app"
 
-# ================= MAIL CONFIG =================
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+# ================= SENDGRID MAIL CONFIG =================
+app.config['MAIL_SERVER'] = 'smtp.sendgrid.net'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'feedbacksystembiascontrol@gmail.com'
-app.config['MAIL_PASSWORD'] = 'qyyx rvhh kfgv puyv'
+app.config['MAIL_USERNAME'] = 'apikey'
+app.config['MAIL_PASSWORD'] = os.getenv("SENDGRID_API_KEY")
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")
 
 mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
@@ -39,70 +41,71 @@ def get_db_connection():
 @app.route("/signup", methods=["POST"])
 def signup():
     data = request.json
-
     name = data["name"]
     email = data["email"]
     username = data["username"]
     password = data["password"]
 
     hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
+    token = serializer.dumps(email, salt="email-confirm")
 
-    # 🔐 Store signup data INSIDE token (NOT in DB)
-    token_data = {
-        "name": name,
-        "email": email,
-        "username": username,
-        "password": hashed_password
-    }
+    db = get_db_connection()
+    cursor = db.cursor()
 
-    token = serializer.dumps(token_data, salt="email-confirm")
+    # check duplicate email or username
+    cursor.execute(
+        "SELECT id FROM admins WHERE email=%s OR username=%s",
+        (email, username)
+    )
+    if cursor.fetchone():
+        cursor.close()
+        db.close()
+        return jsonify({"error": "Email or Username already exists"}), 400
+
+    # insert UNVERIFIED user
+    cursor.execute("""
+        INSERT INTO admins (name, email, username, password_hash, is_verified)
+        VALUES (%s, %s, %s, %s, 0)
+    """, (name, email, username, hashed_password))
+    db.commit()
+    cursor.close()
+    db.close()
+
     verify_link = f"{BASE_URL}/verify/{token}"
 
     msg = Message(
-        "Verify Your Admin Account",
-        sender=app.config['MAIL_USERNAME'],
-        recipients=[email]
+        subject="Verify Your Admin Account",
+        recipients=[email],
+        body=f"Click the link below to verify your account:\n\n{verify_link}"
     )
-    msg.body = f"Click the link below to verify your account:\n\n{verify_link}"
 
     try:
         mail.send(msg)
-        return jsonify({"message": "Verification email sent"}), 200
     except Exception as e:
-        print("Email sending failed:", e)
-        return jsonify({"error": "Unable to send verification email"}), 500
+        print("Email send failed:", e)
+        return jsonify({"error": "Email service unavailable"}), 500
 
+    return jsonify({"message": "Verification email sent"}), 200
 
 # ================= EMAIL VERIFY =================
 @app.route("/verify/<token>")
 def verify_email(token):
     try:
-        data = serializer.loads(token, salt="email-confirm", max_age=3600)
+        email = serializer.loads(token, salt="email-confirm", max_age=3600)
     except:
-        return "Verification link expired or invalid", 400
+        return "Verification link expired", 400
 
     db = get_db_connection()
     cursor = db.cursor()
-
-    try:
-        cursor.execute("""
-            INSERT INTO admins (name, email, username, password_hash, is_verified)
-            VALUES (%s, %s, %s, %s, 1)
-        """, (
-            data["name"],
-            data["email"],
-            data["username"],
-            data["password"]
-        ))
-        db.commit()
-    except mysql.connector.Error:
-        return "Account already exists or verified", 400
-    finally:
-        cursor.close()
-        db.close()
+    cursor.execute(
+        "UPDATE admins SET is_verified=1 WHERE email=%s",
+        (email,)
+    )
+    db.commit()
+    cursor.close()
+    db.close()
 
     return redirect(f"{BASE_URL}/email-verified.html")
-
 
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
@@ -113,7 +116,10 @@ def login():
 
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM admins WHERE username=%s", (username,))
+    cursor.execute(
+        "SELECT * FROM admins WHERE username=%s",
+        (username,)
+    )
     user = cursor.fetchone()
     cursor.close()
     db.close()
@@ -128,7 +134,3 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     return jsonify({"message": "Login successful"}), 200
-
-
-if __name__ == "__main__":
-    app.run(debug=True)
