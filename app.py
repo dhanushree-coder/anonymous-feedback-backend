@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
-from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 import mysql.connector
 import os
+
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail as SGMail
 
 app = Flask(__name__)
 CORS(app)
@@ -15,15 +17,10 @@ app.config['SECRET_KEY'] = 'super-secret-key'
 
 BASE_URL = "https://web-production-315e.up.railway.app"
 
-# ================= SENDGRID =================
-app.config['MAIL_SERVER'] = 'smtp.sendgrid.net'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'apikey'
-app.config['MAIL_PASSWORD'] = os.getenv("SENDGRID_API_KEY")
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv("MAIL_SENDER")
+# ================= SENDGRID (HTTP API) =================
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+MAIL_SENDER = os.getenv("MAIL_SENDER")
 
-mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 
 # ================= DATABASE =================
@@ -61,7 +58,7 @@ def signup():
     hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
     token = serializer.dumps(email, salt="email-confirm")
 
-    # TEMP account (pending verification) -> use 0 (not verified) to match schema
+    # TEMP account (pending verification) -> 0 = not verified yet
     cursor.execute("""
         INSERT INTO admins (name, email, username, password_hash, is_verified)
         VALUES (%s, %s, %s, %s, 0)
@@ -70,14 +67,23 @@ def signup():
 
     verify_link = f"{BASE_URL}/verify/{token}"
 
-    msg = Message(
+    # Build SendGrid HTTP email
+    sg_msg = SGMail(
+        from_email=MAIL_SENDER,
+        to_emails=email,
         subject="Verify Your Admin Account",
-        recipients=[email],
-        body=f"Click the link below to verify your account:\n\n{verify_link}"
+        plain_text_content=f"Click the link below to verify your account:\n\n{verify_link}"
     )
 
     try:
-        mail.send(msg)
+        if not SENDGRID_API_KEY or not MAIL_SENDER:
+            raise RuntimeError("SENDGRID_API_KEY or MAIL_SENDER not configured")
+
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        response = sg.send(sg_msg)
+        # Optional: check status code
+        if response.status_code >= 400:
+            raise RuntimeError(f"SendGrid error: {response.status_code} {response.body}")
     except Exception as e:
         print("Email send failed:", e)
         cursor.execute("DELETE FROM admins WHERE email=%s", (email,))
@@ -108,7 +114,7 @@ def verify_email(token):
     cursor.close()
     db.close()
 
-    # Since your frontend HTML is local, just show a plain success message
+    # Simple message because your frontend HTML is local
     return "Email verified successfully. You can close this tab and login in your app.", 200
 
 # ================= LOGIN =================
@@ -135,3 +141,8 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     return jsonify({"message": "Login successful"}), 200
+
+if __name__ == "__main__":
+    # local testing only; Railway will use gunicorn
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
