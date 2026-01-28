@@ -4,6 +4,7 @@ from flask_bcrypt import Bcrypt
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 import mysql.connector
 import os
+import json
 
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail as SGMail
@@ -77,7 +78,6 @@ def signup():
 
     hashed_password = bcrypt.generate_password_hash(password).decode("utf-8")
 
-    # TEMP account (pending verification) -> 0 = not verified yet
     cursor.execute("""
         INSERT INTO admins (name, email, username, password_hash, is_verified)
         VALUES (%s, %s, %s, %s, 0)
@@ -120,7 +120,6 @@ def verify_email(token):
     cursor.close()
     db.close()
 
-    # Simple message because your frontend HTML is local
     return "Email verified successfully. You can close this tab and login in your app.", 200
 
 # ================= CHECK VERIFICATION STATUS =================
@@ -198,6 +197,59 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     return jsonify({"message": "Login successful"}), 200
+
+# ================= FORM TEMPLATE SAVE =================
+@app.route("/save-form-template", methods=["POST"])
+def save_form_template():
+    data = request.get_json()
+    domain = data.get("domain")
+    status = data.get("status", "draft")
+
+    if not domain:
+        return jsonify({"error": "Domain is required"}), 400
+
+    db = get_db_connection()
+    cursor = db.cursor()
+
+    json_data = json.dumps(data)
+
+    # Upsert per domain
+    cursor.execute("""
+        INSERT INTO form_templates (domain, data, status)
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE data=%s, status=%s
+    """, (domain, json_data, status, json_data, status))
+
+    db.commit()
+    cursor.close()
+    db.close()
+
+    return jsonify({"success": True}), 200
+
+# ================= FORM TEMPLATE LOAD =================
+@app.route("/load-form-template", methods=["GET"])
+def load_form_template():
+    domain = request.args.get("domain")
+
+    if not domain:
+        return jsonify({"error": "Domain is required"}), 400
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("SELECT data FROM form_templates WHERE domain=%s", (domain,))
+    row = cursor.fetchone()
+    cursor.close()
+    db.close()
+
+    if not row:
+        return jsonify({}), 200
+
+    try:
+        obj = json.loads(row["data"])
+    except Exception:
+        obj = {}
+
+    return jsonify(obj), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
