@@ -198,12 +198,14 @@ def login():
 
     return jsonify({"message": "Login successful"}), 200
 
-# ================= FORM TEMPLATE SAVE =================
+# ================= FORM TEMPLATE SAVE (CREATE / UPDATE) =================
 @app.route("/save-form-template", methods=["POST"])
 def save_form_template():
     data = request.get_json()
     domain = data.get("domain")
     status = data.get("status", "draft")
+    name = data.get("name", "Untitled Form")
+    template_id = data.get("id")  # optional
 
     if not domain:
         return jsonify({"error": "Domain is required"}), 400
@@ -213,36 +215,43 @@ def save_form_template():
 
     json_data = json.dumps(data)
 
-    # Upsert per domain
-    cursor.execute("""
-        INSERT INTO form_templates (domain, data, status)
-        VALUES (%s, %s, %s)
-        ON DUPLICATE KEY UPDATE data=%s, status=%s
-    """, (domain, json_data, status, json_data, status))
+    if template_id:
+        # Update existing
+        cursor.execute("""
+            UPDATE form_templates
+            SET name=%s, status=%s, data=%s
+            WHERE id=%s
+        """, (name, status, json_data, template_id))
+    else:
+        # Insert new
+        cursor.execute("""
+            INSERT INTO form_templates (domain, name, status, data)
+            VALUES (%s, %s, %s, %s)
+        """, (domain, name, status, json_data))
+        template_id = cursor.lastrowid
 
     db.commit()
     cursor.close()
     db.close()
 
-    return jsonify({"success": True}), 200
+    return jsonify({"success": True, "id": template_id}), 200
 
-# ================= FORM TEMPLATE LOAD =================
+# ================= FORM TEMPLATE LOAD (BY ID) =================
 @app.route("/load-form-template", methods=["GET"])
 def load_form_template():
-    domain = request.args.get("domain")
-
-    if not domain:
-        return jsonify({"error": "Domain is required"}), 400
+    template_id = request.args.get("id")
+    if not template_id:
+        return jsonify({"error": "Template id is required"}), 400
 
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT data FROM form_templates WHERE domain=%s", (domain,))
+    cursor.execute("SELECT data FROM form_templates WHERE id=%s", (template_id,))
     row = cursor.fetchone()
     cursor.close()
     db.close()
 
     if not row:
-        return jsonify({}), 200
+        return jsonify({"error": "Template not found"}), 404
 
     try:
         obj = json.loads(row["data"])
@@ -250,6 +259,34 @@ def load_form_template():
         obj = {}
 
     return jsonify(obj), 200
+
+# ================= FORM TEMPLATE LIST (ALL DOMAINS) =================
+@app.route("/list-form-templates", methods=["GET"])
+def list_form_templates():
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT id, domain, name, status, created_at, updated_at
+        FROM form_templates
+        ORDER BY updated_at DESC
+    """)
+    rows = cursor.fetchall()
+    cursor.close()
+    db.close()
+
+    return jsonify(rows), 200
+
+# ================= FORM TEMPLATE DELETE =================
+@app.route("/delete-form-template/<int:template_id>", methods=["DELETE"])
+def delete_form_template(template_id):
+    db = get_db_connection()
+    cursor = db.cursor()
+    cursor.execute("DELETE FROM form_templates WHERE id=%s", (template_id,))
+    db.commit()
+    cursor.close()
+    db.close()
+
+    return jsonify({"success": True}), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
