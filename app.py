@@ -720,3 +720,360 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 # ================= HELPER: send verification email =================
+
+# ================= ADMIN FORMS SUMMARY (FOR DASHBOARD FORMS TAB) =================
+@app.route("/admin/forms-summary", methods=["GET"])
+def admin_forms_summary():
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT
+              ft.id,
+              ft.name,
+              ft.status,
+              COUNT(fr.id) AS submissions
+            FROM form_templates ft
+            LEFT JOIN feedback_responses fr
+              ON fr.form_template_id = ft.id
+            GROUP BY ft.id, ft.name, ft.status
+            ORDER BY ft.updated_at DESC
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+        return jsonify(rows), 200
+    except Exception as e:
+        print("admin_forms_summary error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+
+# ================= ADMIN RECENT FEEDBACKS (FOR HOME) =================
+@app.route("/admin/recent-feedbacks", methods=["GET"])
+def admin_recent_feedbacks():
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT
+              fr.id,
+              fr.form_template_id,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fr.created_at AS submitted_at,
+              ft.name AS form_name
+            FROM feedback_responses fr
+            JOIN form_templates ft ON ft.id = fr.form_template_id
+            ORDER BY fr.created_at DESC
+            LIMIT 10
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+        return jsonify(rows), 200
+    except Exception as e:
+        print("admin_recent_feedbacks error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+
+# ================= ADMIN ALL FEEDBACKS (FOR FEEDBACKS TAB) =================
+@app.route("/admin/all-feedbacks", methods=["GET"])
+def admin_all_feedbacks():
+    date = request.args.get("date")
+    form = request.args.get("form")
+    rating = request.args.get("rating")
+
+    where_clauses = []
+    params = []
+
+    if date:
+        where_clauses.append("DATE(fr.created_at) = %s")
+        params.append(date)
+    if form:
+        where_clauses.append("(ft.name LIKE %s OR ft.id = %s)")
+        params.append(f"%{form}%")
+        try:
+            params.append(int(form))
+        except ValueError:
+            params.append(0)
+    if rating:
+        where_clauses.append("fr.overall_rating = %s")
+        params.append(int(rating))
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        sql = f"""
+            SELECT
+              fr.id,
+              fr.form_template_id,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fr.created_at AS submitted_at,
+              ft.name AS form_name
+            FROM feedback_responses fr
+            JOIN form_templates ft ON ft.id = fr.form_template_id
+            {where_sql}
+            ORDER BY fr.created_at DESC
+            LIMIT 100
+        """
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+        return jsonify(rows), 200
+    except Exception as e:
+        print("admin_all_feedbacks error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+
+# ================= FORM ANALYTICS SUMMARY (FOR form-analytics.html) =================
+@app.route("/admin/form-analytics/summary", methods=["GET"])
+def admin_form_analytics_summary():
+    form_id = request.args.get("form_id", type=int)
+    if not form_id:
+        return jsonify({"error": "form_id is required"}), 400
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # basic stats & sentiment
+        cursor.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              AVG(overall_rating) AS avg_rating,
+              SUM(CASE WHEN overall_sentiment='negative' THEN 1 ELSE 0 END) AS negatives,
+              SUM(CASE WHEN overall_sentiment='positive' THEN 1 ELSE 0 END) AS positives
+            FROM feedback_responses
+            WHERE form_template_id=%s
+            """,
+            (form_id,),
+        )
+        summary = cursor.fetchone() or {}
+        total = summary.get("total") or 0
+        positives = summary.get("positives") or 0
+        negatives = summary.get("negatives") or 0
+        avg_rating = summary.get("avg_rating")
+        if avg_rating is not None:
+            summary["avg_rating"] = float(avg_rating)
+
+        # form name
+        cursor.execute(
+            "SELECT name FROM form_templates WHERE id=%s",
+            (form_id,),
+        )
+        frow = cursor.fetchone()
+        summary["form_name"] = frow["name"] if frow else f"Form {form_id}"
+
+        # negative reasons from complaints table
+        cursor.execute(
+            """
+            SELECT summary AS reason_text, COUNT(*) AS count
+            FROM complaints
+            WHERE form_template_id=%s
+            GROUP BY summary
+            ORDER BY COUNT(*) DESC
+            LIMIT 10
+            """,
+            (form_id,),
+        )
+        negative_reasons = cursor.fetchall()
+
+        # blocked attempts approx from ip_activity for submit-feedback endpoint
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS attempts
+            FROM ip_activity
+            WHERE endpoint='submit-feedback'
+            """,
+        )
+        total_attempts_row = cursor.fetchone() or {"attempts": 0}
+        total_attempts = total_attempts_row.get("attempts") or 0
+
+        # crude estimate of blocked attempts using your FEEDBACK_PER_IP_PER_HOUR limit
+        blocked_attempts = max(total_attempts - total * 1, 0)
+
+        # estimated submissions table
+        cursor.execute(
+            """
+            SELECT estimated_submissions
+            FROM estimated_form_submissions
+            WHERE form_template_id=%s
+            """,
+            (form_id,),
+        )
+        est_row = cursor.fetchone()
+        estimated = est_row["estimated_submissions"] if est_row else None
+
+        result = {
+            "form_name": summary["form_name"],
+            "total": total,
+            "avg_rating": summary.get("avg_rating") or 0,
+            "positives": positives,
+            "negatives": negatives,
+            "negative_reasons": negative_reasons,
+            "blocked_attempts": blocked_attempts,
+            "estimated_submissions": estimated,
+        }
+
+        cursor.close()
+        db.close()
+        return jsonify(result), 200
+    except Exception as e:
+        print("admin_form_analytics_summary error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+
+# ================= FORM ANALYTICS PATTERNS (KEYWORDS & SECTIONS) =================
+@app.route("/admin/form-analytics/patterns", methods=["GET"])
+def admin_form_analytics_patterns():
+    form_id = request.args.get("form_id", type=int)
+    if not form_id:
+        return jsonify({"error": "form_id is required"}), 400
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Keywords from negative & complaint answers
+        cursor.execute(
+            """
+            SELECT fa.answer_text
+            FROM feedback_answers fa
+            JOIN feedback_responses fr ON fr.id = fa.feedback_response_id
+            WHERE fr.form_template_id=%s
+              AND (fr.overall_sentiment='negative' OR fa.is_complaint_flag=1)
+            """,
+            (form_id,),
+        )
+        rows = cursor.fetchall()
+        word_counts = {}
+        for r in rows:
+            text = (r["answer_text"] or "").lower()
+            for w in text.replace(",", " ").replace(".", " ").split():
+                if len(w) < 4:
+                    continue
+                word_counts[w] = word_counts.get(w, 0) + 1
+
+        keywords = sorted(
+            [{"word": w, "count": c} for w, c in word_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True
+        )[:10]
+
+        # Section improvement score: more low numeric_score or complaints
+        cursor.execute(
+            """
+            SELECT
+              fa.section_name,
+              SUM(
+                CASE
+                  WHEN fa.numeric_score IS NOT NULL AND fa.numeric_score <= 2 THEN 1
+                  ELSE 0
+                END
+              ) +
+              SUM(CASE WHEN fa.is_complaint_flag=1 THEN 2 ELSE 0 END) AS issue_score
+            FROM feedback_answers fa
+            JOIN feedback_responses fr ON fr.id = fa.feedback_response_id
+            WHERE fr.form_template_id=%s
+            GROUP BY fa.section_name
+            """,
+            (form_id,),
+        )
+        section_rows = cursor.fetchall()
+
+        result = {
+            "keywords": keywords,
+            "sections": section_rows,
+        }
+
+        cursor.close()
+        db.close()
+        return jsonify(result), 200
+    except Exception as e:
+        print("admin_form_analytics_patterns error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+
+# ================= ESTIMATED SUBMISSIONS SAVE =================
+@app.route("/admin/form-analytics/estimated", methods=["POST"])
+def admin_form_analytics_estimated():
+    data = request.get_json() or {}
+    form_id = data.get("form_id")
+    estimated = data.get("estimated_submissions")
+
+    if not form_id:
+        return jsonify({"error": "form_id is required"}), 400
+
+    if estimated is None:
+        return jsonify({"error": "estimated_submissions is required"}), 400
+
+    try:
+        estimated = int(estimated)
+        if estimated < 0:
+            return jsonify({"error": "estimated_submissions cannot be negative"}), 400
+    except ValueError:
+        return jsonify({"error": "estimated_submissions must be integer"}), 400
+
+    db = get_db_connection()
+    cursor = db.cursor()
+    try:
+        # table:
+        # CREATE TABLE estimated_form_submissions (
+        #   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        #   form_template_id BIGINT NOT NULL UNIQUE,
+        #   estimated_submissions INT NOT NULL
+        # );
+        cursor.execute(
+            """
+            INSERT INTO estimated_form_submissions (form_template_id, estimated_submissions)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE estimated_submissions=VALUES(estimated_submissions)
+            """,
+            (form_id, estimated),
+        )
+        db.commit()
+        cursor.close()
+        db.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print("admin_form_analytics_estimated error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
