@@ -11,7 +11,6 @@ from datetime import datetime
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail as SGMail
 
-
 app = Flask(__name__)
 CORS(app)
 bcrypt = Bcrypt(app)
@@ -30,7 +29,6 @@ serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 FEEDBACK_PER_IP_PER_HOUR = 10
 LOGIN_ATTEMPTS_PER_IP_PER_15MIN = 20
 
-
 # ================= DATABASE =================
 def get_db_connection():
     return mysql.connector.connect(
@@ -41,11 +39,9 @@ def get_db_connection():
         port=17639
     )
 
-
 # ================= BASIC HELPERS (IP, HASH, ACTIVITY) =================
 def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
 
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
@@ -53,7 +49,6 @@ def get_client_ip():
     else:
         ip = request.remote_addr or "0.0.0.0"
     return ip
-
 
 def record_ip_activity(ip_hash: str, endpoint: str):
     """
@@ -82,7 +77,6 @@ def record_ip_activity(ip_hash: str, endpoint: str):
         except Exception:
             pass
 
-
 def count_ip_requests(ip_hash: str, endpoint: str, minutes: int) -> int:
     try:
         db = get_db_connection()
@@ -108,7 +102,6 @@ def count_ip_requests(ip_hash: str, endpoint: str, minutes: int) -> int:
         except Exception:
             pass
 
-
 # ================= HELPER: send verification email =================
 def send_verification_email(email):
     token = serializer.dumps(email, salt="email-confirm")
@@ -128,7 +121,6 @@ def send_verification_email(email):
     response = sg.send(sg_msg)
     if response.status_code >= 400:
         raise RuntimeError(f"SendGrid error: {response.status_code} {response.body}")
-
 
 # ================= SIGNUP =================
 @app.route("/signup", methods=["POST"])
@@ -174,7 +166,6 @@ def signup():
     db.close()
     return jsonify({"success": True}), 200
 
-
 # ================= VERIFY =================
 @app.route("/verify/<token>")
 def verify_email(token):
@@ -197,10 +188,7 @@ def verify_email(token):
     cursor.close()
     db.close()
 
-    # You already have email-verified.html, but current flow returns text.
-    # Keeping as-is to avoid breaking frontend.
     return "Email verified successfully. You can close this tab and login in your app.", 200
-
 
 # ================= CHECK VERIFICATION STATUS =================
 @app.route("/check-verification", methods=["POST"])
@@ -222,7 +210,6 @@ def check_verification():
         return jsonify({"exists": False, "is_verified": None}), 200
 
     return jsonify({"exists": True, "is_verified": user["is_verified"]}), 200
-
 
 # ================= RESEND VERIFICATION EMAIL =================
 @app.route("/resend-verification", methods=["POST"])
@@ -253,7 +240,6 @@ def resend_verification():
         return jsonify({"error": "Failed to resend verification email"}), 500
 
     return jsonify({"success": True}), 200
-
 
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
@@ -346,7 +332,6 @@ def login():
     db.close()
     return jsonify({"message": "Login successful"}), 200
 
-
 # ================= FORM TEMPLATE SAVE (CREATE / UPDATE) =================
 @app.route("/save-form-template", methods=["POST"])
 def save_form_template():
@@ -383,7 +368,6 @@ def save_form_template():
 
     return jsonify({"success": True, "id": template_id}), 200
 
-
 # ================= FORM TEMPLATE LOAD (BY ID) =================
 @app.route("/load-form-template", methods=["GET"])
 def load_form_template():
@@ -408,7 +392,6 @@ def load_form_template():
 
     return jsonify(obj), 200
 
-
 # ================= FORM TEMPLATE LIST (ALL DOMAINS) =================
 @app.route("/list-form-templates", methods=["GET"])
 def list_form_templates():
@@ -425,7 +408,6 @@ def list_form_templates():
 
     return jsonify(rows), 200
 
-
 # ================= FORM TEMPLATE DELETE =================
 @app.route("/delete-form-template/<int:template_id>", methods=["DELETE"])
 def delete_form_template(template_id):
@@ -437,7 +419,6 @@ def delete_form_template(template_id):
     db.close()
 
     return jsonify({"success": True}), 200
-
 
 # ================= PUBLIC FORM READ (SAFE VIEW) =================
 @app.route("/get-public-form/<int:template_id>", methods=["GET"])
@@ -477,7 +458,6 @@ def get_public_form(template_id):
     }
     return jsonify(safe), 200
 
-
 # ================= FEEDBACK SENTIMENT / BIAS HELPERS =================
 def classify_sentiment(overall_rating: int) -> str:
     if overall_rating <= 2:
@@ -485,7 +465,6 @@ def classify_sentiment(overall_rating: int) -> str:
     if overall_rating == 3:
         return "neutral"
     return "positive"
-
 
 def detect_biased_pattern(all_answers_text: str, overall_rating: int) -> bool:
     text_lower = all_answers_text.lower()
@@ -498,6 +477,31 @@ def detect_biased_pattern(all_answers_text: str, overall_rating: int) -> bool:
 
     return short_negative or many_generic or rating_mismatch
 
+# ================= STRICT CHECK: FEEDBACK STATUS BY IP =================
+@app.route("/check-feedback-status", methods=["GET"])
+def check_feedback_status():
+    form_id = request.args.get("form_id", type=int)
+    if not form_id:
+        return jsonify({"error": "form_id is required"}), 400
+
+    client_ip = get_client_ip()
+    ip_hash = hash_value(client_ip)
+
+    db = get_db_connection()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM feedback_responses
+        WHERE form_template_id=%s AND client_ip_hash=%s
+        """,
+        (form_id, ip_hash),
+    )
+    (count,) = cursor.fetchone()
+    cursor.close()
+    db.close()
+
+    return jsonify({"already_submitted": count > 0}), 200
 
 # ================= SUBMIT FEEDBACK (ANONYMOUS) =================
 @app.route("/submit-feedback", methods=["POST"])
@@ -542,9 +546,29 @@ def submit_feedback():
     ip_hash = hash_value(client_ip)
     ua_hash = hash_value(request.headers.get("User-Agent", "unknown"))
 
-    # rate limit submissions per IP/hour
+    # ===== STRICT PER-FORM PER-IP LOCK =====
+    db = get_db_connection()
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM feedback_responses
+        WHERE form_template_id=%s AND client_ip_hash=%s
+        """,
+        (form_id, ip_hash),
+    )
+    (already_submitted_count,) = cursor.fetchone()
+    if already_submitted_count > 0:
+        cursor.close()
+        db.close()
+        return jsonify({"error": "already_submitted"}), 429
+    # =======================================
+
+    # rate limit submissions per IP/hour (in addition to strict lock)
     feedback_last_hour = count_ip_requests(ip_hash, "submit-feedback", 60)
     if feedback_last_hour >= FEEDBACK_PER_IP_PER_HOUR:
+        cursor.close()
+        db.close()
         return jsonify({"error": "Too many submissions from your network. Try later."}), 429
 
     record_ip_activity(ip_hash, "submit-feedback")
@@ -554,9 +578,6 @@ def submit_feedback():
 
     all_text = " ".join([(a.get("answer_value") or "") for a in answers]) + " " + rating_reason
     is_biased_flag = 1 if detect_biased_pattern(all_text, overall_rating) else 0
-
-    db = get_db_connection()
-    cursor = db.cursor()
 
     # ensure form exists and is public
     cursor.execute("SELECT status FROM form_templates WHERE id=%s", (form_id,))
@@ -667,7 +688,6 @@ def submit_feedback():
             pass
         return jsonify({"error": "Server error"}), 500
 
-
 # ================= SIMPLE ADMIN ANALYTICS =================
 @app.route("/admin/form-summary/<int:form_id>", methods=["GET"])
 def form_summary(form_id):
@@ -715,7 +735,6 @@ def form_summary(form_id):
             pass
         return jsonify({"error": "Server error"}), 500
 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
@@ -754,7 +773,6 @@ def admin_forms_summary():
             pass
         return jsonify({"error": "Server error"}), 500
 
-
 # ================= ADMIN RECENT FEEDBACKS (FOR HOME) =================
 @app.route("/admin/recent-feedbacks", methods=["GET"])
 def admin_recent_feedbacks():
@@ -788,7 +806,6 @@ def admin_recent_feedbacks():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
-
 
 # ================= ADMIN ALL FEEDBACKS (FOR FEEDBACKS TAB) =================
 @app.route("/admin/all-feedbacks", methods=["GET"])
@@ -848,7 +865,6 @@ def admin_all_feedbacks():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
-
 
 # ================= FORM ANALYTICS SUMMARY (FOR form-analytics.html) =================
 @app.route("/admin/form-analytics/summary", methods=["GET"])
@@ -952,7 +968,6 @@ def admin_form_analytics_summary():
             pass
         return jsonify({"error": "Server error"}), 500
 
-
 # ================= FORM ANALYTICS PATTERNS (KEYWORDS & SECTIONS) =================
 @app.route("/admin/form-analytics/patterns", methods=["GET"])
 def admin_form_analytics_patterns():
@@ -1026,7 +1041,6 @@ def admin_form_analytics_patterns():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
-
 
 # ================= ESTIMATED SUBMISSIONS SAVE =================
 @app.route("/admin/form-analytics/estimated", methods=["POST"])
