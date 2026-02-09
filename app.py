@@ -559,6 +559,20 @@ def submit_feedback():
     )
     (already_submitted_count,) = cursor.fetchone()
     if already_submitted_count > 0:
+        # log duplicate IP attempt
+        try:
+            cursor.execute(
+                """
+                INSERT INTO blocked_feedback_attempts
+                  (form_template_id, client_ip_hash, user_agent_hash, blocked_reason)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (form_id, ip_hash, ua_hash, "duplicate_ip"),
+            )
+            db.commit()
+        except Exception as e:
+            print("blocked_feedback_attempts insert error (duplicate_ip):", e)
+
         cursor.close()
         db.close()
         return jsonify({"error": "already_submitted"}), 429
@@ -567,6 +581,20 @@ def submit_feedback():
     # rate limit submissions per IP/hour (in addition to strict lock)
     feedback_last_hour = count_ip_requests(ip_hash, "submit-feedback", 60)
     if feedback_last_hour >= FEEDBACK_PER_IP_PER_HOUR:
+        # log rate-limited attempt
+        try:
+            cursor.execute(
+                """
+                INSERT INTO blocked_feedback_attempts
+                  (form_template_id, client_ip_hash, user_agent_hash, blocked_reason)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (form_id, ip_hash, ua_hash, "rate_limit"),
+            )
+            db.commit()
+        except Exception as e:
+            print("blocked_feedback_attempts insert error (rate_limit):", e)
+
         cursor.close()
         db.close()
         return jsonify({"error": "Too many submissions from your network. Try later."}), 429
@@ -933,6 +961,24 @@ def admin_form_analytics_summary():
         # crude estimate of blocked attempts using your FEEDBACK_PER_IP_PER_HOUR limit
         blocked_attempts = max(total_attempts - total * 1, 0)
 
+        # detailed blocked IPs from blocked_feedback_attempts
+        cursor.execute(
+            """
+            SELECT client_ip_hash,
+                   COUNT(*) AS attempts,
+                   MIN(occurred_at) AS first_blocked,
+                   MAX(occurred_at) AS last_blocked,
+                   GROUP_CONCAT(DISTINCT blocked_reason) AS reasons
+            FROM blocked_feedback_attempts
+            WHERE form_template_id=%s
+            GROUP BY client_ip_hash
+            ORDER BY last_blocked DESC
+            LIMIT 20
+            """,
+            (form_id,),
+        )
+        blocked_ips = cursor.fetchall()
+
         # estimated submissions table
         cursor.execute(
             """
@@ -954,6 +1000,7 @@ def admin_form_analytics_summary():
             "negative_reasons": negative_reasons,
             "blocked_attempts": blocked_attempts,
             "estimated_submissions": estimated,
+            "blocked_ips": blocked_ips,
         }
 
         cursor.close()
