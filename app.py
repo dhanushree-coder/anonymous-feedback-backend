@@ -766,6 +766,7 @@ def form_summary(form_id):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+
 # ================= HELPER: send verification email =================
 
 # ================= ADMIN FORMS SUMMARY (FOR DASHBOARD FORMS TAB) =================
@@ -1132,6 +1133,42 @@ def admin_form_analytics_estimated():
         return jsonify({"success": True}), 200
     except Exception as e:
         print("admin_form_analytics_estimated error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+# ================= ADMIN USERS SUMMARY (FOR USERS TAB) =================
+@app.route("/admin/users-summary", methods=["GET"])
+def admin_users_summary():
+    """
+    Aggregates feedback_responses by client_ip_hash
+    and returns anonymous users summary for the Users tab.
+    """
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # feedback_responses must have: client_ip_hash, created_at
+        cursor.execute(
+            """
+            SELECT
+              client_ip_hash,
+              COUNT(*) AS total_submissions,
+              MAX(created_at) AS last_submission
+            FROM feedback_responses
+            GROUP BY client_ip_hash
+            ORDER BY last_submission DESC
+            LIMIT 100
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+        return jsonify(rows), 200
+    except Exception as e:
+        print("admin_users_summary error:", e)
         try:
             cursor.close()
             db.close()
