@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify, redirect, send_file
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -7,9 +7,12 @@ import os
 import json
 import hashlib
 from datetime import datetime
+import io
 
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail as SGMail
+
+import pdfkit  # for PDF generation
 
 app = Flask(__name__)
 CORS(app)
@@ -51,15 +54,6 @@ def get_client_ip():
     return ip
 
 def record_ip_activity(ip_hash: str, endpoint: str):
-    """
-    Requires table:
-    CREATE TABLE ip_activity (
-        id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        client_ip_hash VARCHAR(64) NOT NULL,
-        endpoint VARCHAR(100) NOT NULL,
-        occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """
     try:
         db = get_db_connection()
         cursor = db.cursor()
@@ -251,7 +245,6 @@ def login():
     client_ip = get_client_ip()
     ip_hash = hash_value(client_ip)
 
-    # Rate limit for login attempts
     attempts = count_ip_requests(ip_hash, "login", 15)
     if attempts >= LOGIN_ATTEMPTS_PER_IP_PER_15MIN:
         return jsonify({"error": "Too many login attempts, please wait."}), 429
@@ -263,10 +256,7 @@ def login():
     cursor.execute("SELECT * FROM admins WHERE username=%s", (username,))
     user = cursor.fetchone()
 
-    success = False
-
     if not user:
-        # record failed attempt
         try:
             cursor2 = db.cursor()
             cursor2.execute(
@@ -283,7 +273,6 @@ def login():
         return jsonify({"error": "Invalid credentials"}), 401
 
     if user["is_verified"] != 1:
-        # record attempt
         try:
             cursor2 = db.cursor()
             cursor2.execute(
@@ -315,8 +304,6 @@ def login():
         db.close()
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # success
-    success = True
     try:
         cursor2 = db.cursor()
         cursor2.execute(
@@ -339,7 +326,7 @@ def save_form_template():
     domain = data.get("domain")
     status = data.get("status", "draft")
     name = data.get("name", "Untitled Form")
-    template_id = data.get("id")  # optional
+    template_id = data.get("id")
 
     if not domain:
         return jsonify({"error": "Domain is required"}), 400
@@ -423,10 +410,6 @@ def delete_form_template(template_id):
 # ================= PUBLIC FORM READ (SAFE VIEW) =================
 @app.route("/get-public-form/<int:template_id>", methods=["GET"])
 def get_public_form(template_id):
-    """
-    Returns a safe subset of the template for public rendering.
-    Uses existing form_templates.data JSON, but requires status != 'draft'.
-    """
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     cursor.execute(
@@ -506,25 +489,6 @@ def check_feedback_status():
 # ================= SUBMIT FEEDBACK (ANONYMOUS) =================
 @app.route("/submit-feedback", methods=["POST"])
 def submit_feedback():
-    """
-    Expected JSON from public-form.html:
-    {
-      "form_id": 123,
-      "overall_rating": 1-5,
-      "rating_reason": "...",  # required if rating <=2
-      "answers": [
-         {
-           "section_name": "...",
-           "question_index": 0,
-           "question_text": "...",
-           "answer_type": "multiple" | "short" | "long" | "rating" | "yesno" | "checkbox" | "dropdown",
-           "answer_value": "text or selected label(s)",
-           "numeric_score": 1-5 (optional, for ratings)
-         },
-         ...
-      ]
-    }
-    """
     payload = request.get_json() or {}
     form_id = payload.get("form_id")
     overall_rating = payload.get("overall_rating")
@@ -546,7 +510,6 @@ def submit_feedback():
     ip_hash = hash_value(client_ip)
     ua_hash = hash_value(request.headers.get("User-Agent", "unknown"))
 
-    # ===== STRICT PER-FORM PER-IP LOCK =====
     db = get_db_connection()
     cursor = db.cursor()
     cursor.execute(
@@ -559,7 +522,6 @@ def submit_feedback():
     )
     (already_submitted_count,) = cursor.fetchone()
     if already_submitted_count > 0:
-        # log duplicate IP attempt
         try:
             cursor.execute(
                 """
@@ -576,12 +538,9 @@ def submit_feedback():
         cursor.close()
         db.close()
         return jsonify({"error": "already_submitted"}), 429
-    # =======================================
 
-    # rate limit submissions per IP/hour (in addition to strict lock)
     feedback_last_hour = count_ip_requests(ip_hash, "submit-feedback", 60)
     if feedback_last_hour >= FEEDBACK_PER_IP_PER_HOUR:
-        # log rate-limited attempt
         try:
             cursor.execute(
                 """
@@ -607,7 +566,6 @@ def submit_feedback():
     all_text = " ".join([(a.get("answer_value") or "") for a in answers]) + " " + rating_reason
     is_biased_flag = 1 if detect_biased_pattern(all_text, overall_rating) else 0
 
-    # ensure form exists and is public
     cursor.execute("SELECT status FROM form_templates WHERE id=%s", (form_id,))
     row = cursor.fetchone()
     if not row:
@@ -620,9 +578,6 @@ def submit_feedback():
         return jsonify({"error": "Form is not public"}), 403
 
     try:
-        # feedback_responses table must exist:
-        # form_template_id, client_ip_hash, user_agent_hash, overall_rating, overall_sentiment,
-        # is_negative_flag, is_biased_flag, raw_meta
         meta = {
             "rating_reason": rating_reason
         }
@@ -716,12 +671,9 @@ def submit_feedback():
             pass
         return jsonify({"error": "Server error"}), 500
 
-# ================= SIMPLE ADMIN ANALYTICS =================
+# ================= SIMPLE ADMIN ANALYTICS (LEGACY) =================
 @app.route("/admin/form-summary/<int:form_id>", methods=["GET"])
 def form_summary(form_id):
-    """
-    Returns counts by sentiment, average rating, and complaint count.
-    """
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
@@ -747,7 +699,6 @@ def form_summary(form_id):
         c_row = cursor.fetchone() or {}
         summary["complaints"] = c_row.get("complaints", 0)
 
-        # convert Decimal to float where needed
         if summary.get("avg_rating") is not None:
             summary["avg_rating"] = float(summary["avg_rating"])
 
@@ -762,12 +713,6 @@ def form_summary(form_id):
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-# ================= HELPER: send verification email =================
 
 # ================= ADMIN FORMS SUMMARY (FOR DASHBOARD FORMS TAB) =================
 @app.route("/admin/forms-summary", methods=["GET"])
@@ -905,7 +850,6 @@ def admin_form_analytics_summary():
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
-        # basic stats & sentiment
         cursor.execute(
             """
             SELECT
@@ -926,7 +870,6 @@ def admin_form_analytics_summary():
         if avg_rating is not None:
             summary["avg_rating"] = float(avg_rating)
 
-        # form name
         cursor.execute(
             "SELECT name FROM form_templates WHERE id=%s",
             (form_id,),
@@ -934,7 +877,6 @@ def admin_form_analytics_summary():
         frow = cursor.fetchone()
         summary["form_name"] = frow["name"] if frow else f"Form {form_id}"
 
-        # negative reasons from complaints table
         cursor.execute(
             """
             SELECT summary AS reason_text, COUNT(*) AS count
@@ -948,7 +890,6 @@ def admin_form_analytics_summary():
         )
         negative_reasons = cursor.fetchall()
 
-        # blocked attempts approx from ip_activity for submit-feedback endpoint
         cursor.execute(
             """
             SELECT COUNT(*) AS attempts
@@ -959,10 +900,8 @@ def admin_form_analytics_summary():
         total_attempts_row = cursor.fetchone() or {"attempts": 0}
         total_attempts = total_attempts_row.get("attempts") or 0
 
-        # crude estimate of blocked attempts using your FEEDBACK_PER_IP_PER_HOUR limit
         blocked_attempts = max(total_attempts - total * 1, 0)
 
-        # detailed blocked IPs from blocked_feedback_attempts
         cursor.execute(
             """
             SELECT client_ip_hash,
@@ -980,7 +919,6 @@ def admin_form_analytics_summary():
         )
         blocked_ips = cursor.fetchall()
 
-        # estimated submissions table
         cursor.execute(
             """
             SELECT estimated_submissions
@@ -1026,7 +964,6 @@ def admin_form_analytics_patterns():
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
-        # Keywords from negative & complaint answers
         cursor.execute(
             """
             SELECT fa.answer_text
@@ -1052,7 +989,6 @@ def admin_form_analytics_patterns():
             reverse=True
         )[:10]
 
-        # Section improvement score: more low numeric_score or complaints
         cursor.execute(
             """
             SELECT
@@ -1113,12 +1049,6 @@ def admin_form_analytics_estimated():
     db = get_db_connection()
     cursor = db.cursor()
     try:
-        # table:
-        # CREATE TABLE estimated_form_submissions (
-        #   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-        #   form_template_id BIGINT NOT NULL UNIQUE,
-        #   estimated_submissions INT NOT NULL
-        # );
         cursor.execute(
             """
             INSERT INTO estimated_form_submissions (form_template_id, estimated_submissions)
@@ -1143,14 +1073,9 @@ def admin_form_analytics_estimated():
 # ================= ADMIN USERS SUMMARY (FOR USERS TAB) =================
 @app.route("/admin/users-summary", methods=["GET"])
 def admin_users_summary():
-    """
-    Aggregates feedback_responses by client_ip_hash
-    and returns anonymous users summary for the Users tab.
-    """
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
-        # feedback_responses must have: client_ip_hash, created_at
         cursor.execute(
             """
             SELECT
@@ -1175,3 +1100,294 @@ def admin_users_summary():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
+# ================= FEEDBACK DETAILS (FOR VIEW RESPONSE PAGE) =================
+@app.route("/admin/feedback/<int:response_id>", methods=["GET"])
+def admin_feedback_details(response_id):
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT
+              fr.id,
+              fr.form_template_id,
+              fr.client_ip_hash,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fr.saved_flag,
+              fr.created_at AS submitted_at,
+              ft.name AS form_name
+            FROM feedback_responses fr
+            JOIN form_templates ft ON ft.id = fr.form_template_id
+            WHERE fr.id = %s
+            """,
+            (response_id,),
+        )
+        resp = cursor.fetchone()
+        if not resp:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Response not found"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+              section_name,
+              question_text,
+              answer_text
+            FROM feedback_answers
+            WHERE feedback_response_id=%s
+            ORDER BY section_name, question_index ASC
+            """,
+            (response_id,),
+        )
+        answers = cursor.fetchall()
+
+        result = resp
+        result["answers"] = answers
+
+        cursor.close()
+        db.close()
+        return jsonify(result), 200
+    except Exception as e:
+        print("admin_feedback_details error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+# ================= FEEDBACK SAVE FLAG =================
+@app.route("/admin/feedback/<int:response_id>/save", methods=["POST"])
+def admin_feedback_save(response_id):
+    db = get_db_connection()
+    cursor = db.cursor()
+    try:
+        cursor.execute(
+            """
+            UPDATE feedback_responses
+            SET saved_flag = 1
+            WHERE id = %s
+            """,
+            (response_id,),
+        )
+        db.commit()
+        if cursor.rowcount == 0:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Response not found"}), 404
+
+        cursor.close()
+        db.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print("admin_feedback_save error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+# ================= FEEDBACK DELETE =================
+@app.route("/admin/feedback/<int:response_id>/delete", methods=["POST"])
+def admin_feedback_delete(response_id):
+    db = get_db_connection()
+    cursor = db.cursor()
+    try:
+        cursor.execute("DELETE FROM complaints WHERE feedback_response_id=%s", (response_id,))
+        cursor.execute("DELETE FROM feedback_answers WHERE feedback_response_id=%s", (response_id,))
+        cursor.execute("DELETE FROM feedback_responses WHERE id=%s", (response_id,))
+        db.commit()
+        if cursor.rowcount == 0:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Response not found"}), 404
+        cursor.close()
+        db.close()
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print("admin_feedback_delete error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+# ================= REPORTS: LIST FORMS WITH RESPONSES =================
+@app.route("/admin/reports/forms", methods=["GET"])
+def admin_reports_forms():
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT
+              ft.id,
+              ft.name,
+              COUNT(fr.id) AS total_submissions,
+              AVG(fr.overall_rating) AS avg_rating
+            FROM form_templates ft
+            JOIN feedback_responses fr ON fr.form_template_id = ft.id
+            WHERE ft.status = 'published'
+            GROUP BY ft.id, ft.name
+            HAVING total_submissions > 0
+            ORDER BY ft.updated_at DESC
+            """
+        )
+        rows = cursor.fetchall()
+        for r in rows:
+            if r.get("avg_rating") is not None:
+                r["avg_rating"] = float(r["avg_rating"])
+        cursor.close()
+        db.close()
+        return jsonify(rows), 200
+    except Exception as e:
+        print("admin_reports_forms error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Server error"}), 500
+
+# ================= REPORTS: PDF DOWNLOAD PER FORM =================
+@app.route("/admin/reports/<int:form_id>/pdf", methods=["GET"])
+def admin_reports_pdf(form_id):
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, name, status, domain FROM form_templates WHERE id=%s",
+            (form_id,),
+        )
+        form_row = cursor.fetchone()
+        if not form_row:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Form not found"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              AVG(overall_rating) AS avg_rating,
+              SUM(CASE WHEN overall_sentiment='negative' THEN 1 ELSE 0 END) AS negatives,
+              SUM(CASE WHEN overall_sentiment='neutral' THEN 1 ELSE 0 END) AS neutrals,
+              SUM(CASE WHEN overall_sentiment='positive' THEN 1 ELSE 0 END) AS positives
+            FROM feedback_responses
+            WHERE form_template_id=%s
+            """,
+            (form_id,),
+        )
+        summary = cursor.fetchone() or {}
+
+        cursor.execute(
+            """
+            SELECT summary, overall_rating
+            FROM complaints
+            WHERE form_template_id=%s
+            ORDER BY id DESC
+            LIMIT 20
+            """,
+            (form_id,),
+        )
+        complaints_rows = cursor.fetchall()
+
+        cursor.execute(
+            """
+            SELECT
+              fa.section_name,
+              fa.question_text,
+              fa.answer_text,
+              fr.overall_rating,
+              fr.overall_sentiment
+            FROM feedback_answers fa
+            JOIN feedback_responses fr ON fr.id = fa.feedback_response_id
+            WHERE fr.form_template_id=%s
+            ORDER BY fr.created_at DESC, fa.section_name, fa.question_index
+            LIMIT 100
+            """,
+            (form_id,),
+        )
+        sample_answers = cursor.fetchall()
+
+        cursor.close()
+        db.close()
+
+        total = summary.get("total") or 0
+        avg_rating = summary.get("avg_rating") or 0
+        negatives = summary.get("negatives") or 0
+        neutrals = summary.get("neutrals") or 0
+        positives = summary.get("positives") or 0
+
+        html_parts = []
+        html_parts.append("<html><head><meta charset='utf-8'><style>")
+        html_parts.append("body { font-family: Arial, sans-serif; font-size: 12px; }")
+        html_parts.append("h1, h2, h3 { color: #222; }")
+        html_parts.append("table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }")
+        html_parts.append("th, td { border: 1px solid #ccc; padding: 4px 6px; text-align: left; }")
+        html_parts.append(".small { font-size: 10px; color: #555; }")
+        html_parts.append("</style></head><body>")
+
+        html_parts.append(f"<h1>Feedback Report - {form_row.get('name') or 'Form ' + str(form_id)}</h1>")
+        html_parts.append(f"<p class='small'>Form ID: {form_row['id']} | Domain: {form_row.get('domain') or '-'} | Status: {form_row.get('status')}</p>")
+        html_parts.append(f"<p>Date generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} (UTC)</p>")
+
+        html_parts.append("<h2>Summary</h2>")
+        html_parts.append("<table>")
+        html_parts.append("<tr><th>Total Submissions</th><th>Average Rating</th><th>Positive</th><th>Neutral</th><th>Negative</th></tr>")
+        html_parts.append(f"<tr><td>{total}</td><td>{round(float(avg_rating), 2) if avg_rating else 0.0}</td><td>{positives}</td><td>{neutrals}</td><td>{negatives}</td></tr>")
+        html_parts.append("</table>")
+
+        html_parts.append("<h2>Recent Complaints & Negative Highlights</h2>")
+        if complaints_rows:
+            html_parts.append("<table>")
+            html_parts.append("<tr><th>Rating</th><th>Summary</th></tr>")
+            for c in complaints_rows:
+                html_parts.append(f"<tr><td>{c.get('overall_rating')}</td><td>{c.get('summary')}</td></tr>")
+            html_parts.append("</table>")
+        else:
+            html_parts.append("<p>No recorded complaints for this form.</p>")
+
+        html_parts.append("<h2>Sample Answers (up to 100)</h2>")
+        if sample_answers:
+            html_parts.append("<table>")
+            html_parts.append("<tr><th>Section</th><th>Question</th><th>Answer</th><th>Rating</th><th>Sentiment</th></tr>")
+            for a in sample_answers:
+                html_parts.append(
+                    f"<tr><td>{a.get('section_name') or '-'}</td>"
+                    f"<td>{a.get('question_text') or '-'}</td>"
+                    f"<td>{a.get('answer_text') or '-'}</td>"
+                    f"<td>{a.get('overall_rating') or '-'}</td>"
+                    f"<td>{a.get('overall_sentiment') or '-'}</td></tr>"
+                )
+            html_parts.append("</table>")
+        else:
+            html_parts.append("<p>No sample answers available.</p>")
+
+        html_parts.append("<p class='small'>This is an auto-generated report for internal use by the administrator.</p>")
+        html_parts.append("</body></html>")
+
+        html_content = "".join(html_parts)
+
+        pdf = pdfkit.from_string(html_content, False)
+        pdf_stream = io.BytesIO(pdf)
+
+        filename = f"feedback_report_form_{form_id}.pdf"
+        return send_file(
+            pdf_stream,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/pdf"
+        )
+    except Exception as e:
+        print("admin_reports_pdf error:", e)
+        return jsonify({"error": "Failed to generate PDF report"}), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
