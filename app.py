@@ -760,11 +760,11 @@ def admin_recent_feedbacks():
               fr.form_template_id,
               fr.overall_rating,
               fr.overall_sentiment,
-              fr.created_at AS submitted_at,
+              fr.submitted_at AS submitted_at,
               ft.name AS form_name
             FROM feedback_responses fr
             JOIN form_templates ft ON ft.id = fr.form_template_id
-            ORDER BY fr.created_at DESC
+            ORDER BY fr.submitted_at DESC
             LIMIT 10
             """
         )
@@ -792,7 +792,7 @@ def admin_all_feedbacks():
     params = []
 
     if date:
-        where_clauses.append("DATE(fr.created_at) = %s")
+        where_clauses.append("DATE(fr.submitted_at) = %s")
         params.append(date)
     if form:
         where_clauses.append("(ft.name LIKE %s OR ft.id = %s)")
@@ -818,12 +818,12 @@ def admin_all_feedbacks():
               fr.form_template_id,
               fr.overall_rating,
               fr.overall_sentiment,
-              fr.created_at AS submitted_at,
+              fr.submitted_at AS submitted_at,
               ft.name AS form_name
             FROM feedback_responses fr
             JOIN form_templates ft ON ft.id = fr.form_template_id
             {where_sql}
-            ORDER BY fr.created_at DESC
+            ORDER BY fr.submitted_at DESC
             LIMIT 100
         """
         cursor.execute(sql, tuple(params))
@@ -1081,7 +1081,7 @@ def admin_users_summary():
             SELECT
               client_ip_hash,
               COUNT(*) AS total_submissions,
-              MAX(created_at) AS last_submission
+              MAX(submitted_at) AS last_submission
             FROM feedback_responses
             GROUP BY client_ip_hash
             ORDER BY last_submission DESC
@@ -1116,7 +1116,7 @@ def admin_feedback_details(response_id):
               fr.overall_rating,
               fr.overall_sentiment,
               fr.saved_flag,
-              fr.created_at AS submitted_at,
+              fr.submitted_at AS submitted_at,
               ft.name AS form_name
             FROM feedback_responses fr
             JOIN form_templates ft ON ft.id = fr.form_template_id
@@ -1308,7 +1308,7 @@ def admin_reports_pdf(form_id):
             FROM feedback_answers fa
             JOIN feedback_responses fr ON fr.id = fa.feedback_response_id
             WHERE fr.form_template_id=%s
-            ORDER BY fr.created_at DESC, fa.section_name, fa.question_index
+            ORDER BY fr.submitted_at DESC, fa.section_name, fa.question_index
             LIMIT 100
             """,
             (form_id,),
