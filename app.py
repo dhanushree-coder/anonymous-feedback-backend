@@ -35,11 +35,11 @@ LOGIN_ATTEMPTS_PER_IP_PER_15MIN = 20
 # ================= DATABASE =================
 def get_db_connection():
     return mysql.connector.connect(
-        host="yamanote.proxy.rlwy.net",
+        host="maglev.proxy.rlwy.net",
         user="root",
-        password="rPwaOSqIAnqPGlZaArBxSCwURjqaDQFt",
+        password="zBxZyJjgfvudZIPuMJAuvPMAMzjLYcVR",
         database="railway",
-        port=17639
+        port=13758
     )
 
 

@@ -3,9 +3,9 @@ import os
 
 def get_db_connection():
     return mysql.connector.connect(
-        host=os.getenv("yamanote.proxy.rlwy.net"),
+        host=os.getenv("maglev.proxy.rlwy.net"),
         user=os.getenv("root"),
-        password=os.getenv("rPwaOSqIAnqPGlZaArBxSCwURjqaDQFt"),
+        password=os.getenv("zBxZyJjgfvudZIPuMJAuvPMAMzjLYcVR"),
         database=os.getenv("railway"),
-        port=int(os.getenv("17639"))
+        port=int(os.getenv("13758"))
     )
