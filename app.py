@@ -13,6 +13,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail as SGMail
 
 import pdfkit  # for PDF generation
+import csv     # for CSV report generation
 
 app = Flask(__name__)
 CORS(app)
@@ -1228,12 +1229,13 @@ def admin_reports_forms():
             SELECT
               ft.id,
               ft.name,
+              ft.created_at,
               COUNT(fr.id) AS total_submissions,
               AVG(fr.overall_rating) AS avg_rating
             FROM form_templates ft
             JOIN feedback_responses fr ON fr.form_template_id = ft.id
             WHERE ft.status = 'published'
-            GROUP BY ft.id, ft.name
+            GROUP BY ft.id, ft.name, ft.created_at
             HAVING total_submissions > 0
             ORDER BY ft.updated_at DESC
             """
@@ -1253,6 +1255,72 @@ def admin_reports_forms():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
+# ================= REPORTS: CSV DOWNLOAD PER FORM =================
+@app.route("/admin/reports/<int:form_id>/csv", methods=["GET"])
+def admin_reports_csv(form_id):
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, name FROM form_templates WHERE id=%s",
+            (form_id,),
+        )
+        form_row = cursor.fetchone()
+        if not form_row:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Form not found"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+              fr.id AS response_id,
+              fr.submitted_at,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fa.section_name,
+              fa.question_text,
+              fa.answer_text
+            FROM feedback_responses fr
+            LEFT JOIN feedback_answers fa ON fa.feedback_response_id = fr.id
+            WHERE fr.form_template_id=%s
+            ORDER BY fr.submitted_at DESC, fa.section_name, fa.question_index
+            """,
+            (form_id,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "response_id", "submitted_at", "overall_rating", "overall_sentiment",
+            "section_name", "question_text", "answer_text"
+        ])
+        for r in rows:
+            writer.writerow([
+                r.get("response_id"),
+                r.get("submitted_at"),
+                r.get("overall_rating"),
+                r.get("overall_sentiment"),
+                r.get("section_name") or "",
+                r.get("question_text") or "",
+                r.get("answer_text") or "",
+            ])
+
+        csv_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
+        filename = f"feedback_report_form_{form_id}.csv"
+        return send_file(
+            csv_bytes,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="text/csv"
+        )
+    except Exception as e:
+        print("admin_reports_csv error:", e)
+        return jsonify({"error": "Failed to generate CSV report"}), 500
 
 # ================= REPORTS: PDF DOWNLOAD PER FORM =================
 @app.route("/admin/reports/<int:form_id>/pdf", methods=["GET"])
