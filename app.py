@@ -1296,8 +1296,6 @@ def admin_reports_forms():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
-
-
 # ================= REPORTS: PDF DOWNLOAD PER FORM (kept but not used in UI) =================
 @app.route("/admin/reports/<int:form_id>/pdf", methods=["GET"])
 def admin_reports_pdf(form_id):
@@ -1443,9 +1441,40 @@ def admin_reports_pdf(form_id):
         return jsonify({"error": "Failed to generate PDF report"}), 500
 
 
-# ================= REPORTS: CSV DOWNLOAD PER FORM =================
+# ===== CSV helper for all CSV routes =====
+def build_csv_from_rows(rows):
+    si = io.StringIO()
+    fieldnames = [
+        "response_id",
+        "submitted_at",
+        "overall_rating",
+        "overall_sentiment",
+        "section_name",
+        "question_text",
+        "answer_text",
+        "numeric_score",
+    ]
+    writer = csv.DictWriter(si, fieldnames=fieldnames)
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({
+            "response_id": r.get("response_id"),
+            "submitted_at": r.get("submitted_at"),
+            "overall_rating": r.get("overall_rating"),
+            "overall_sentiment": r.get("overall_sentiment"),
+            "section_name": r.get("section_name"),
+            "question_text": r.get("question_text"),
+            "answer_text": r.get("answer_text"),
+            "numeric_score": r.get("numeric_score"),
+        })
+    return si.getvalue()
+
+
+# ================= REPORTS: CSV DOWNLOAD PER FORM (with optional sentiment) =================
 @app.route("/admin/reports/<int:form_id>/csv", methods=["GET"])
 def admin_reports_csv(form_id):
+    sentiment = request.args.get("sentiment")  # "positive", "negative" or None
+
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
@@ -1459,8 +1488,14 @@ def admin_reports_csv(form_id):
             db.close()
             return jsonify({"error": "Form not found"}), 404
 
+        where = "WHERE fr.form_template_id=%s"
+        params = [form_id]
+        if sentiment in ("positive", "negative"):
+            where += " AND fr.overall_sentiment=%s"
+            params.append(sentiment)
+
         cursor.execute(
-            """
+            f"""
             SELECT
               fr.id AS response_id,
               fr.submitted_at,
@@ -1472,47 +1507,150 @@ def admin_reports_csv(form_id):
               fa.numeric_score
             FROM feedback_responses fr
             JOIN feedback_answers fa ON fa.feedback_response_id = fr.id
-            WHERE fr.form_template_id=%s
+            {where}
             ORDER BY fr.submitted_at DESC, fa.section_name, fa.question_index
             """,
-            (form_id,),
+            tuple(params),
         )
         rows = cursor.fetchall()
         cursor.close()
         db.close()
 
-        si = io.StringIO()
-        fieldnames = [
-            "response_id",
-            "submitted_at",
-            "overall_rating",
-            "overall_sentiment",
-            "section_name",
-            "question_text",
-            "answer_text",
-            "numeric_score",
-        ]
-        writer = csv.DictWriter(si, fieldnames=fieldnames)
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({
-                "response_id": r.get("response_id"),
-                "submitted_at": r.get("submitted_at"),
-                "overall_rating": r.get("overall_rating"),
-                "overall_sentiment": r.get("overall_sentiment"),
-                "section_name": r.get("section_name"),
-                "question_text": r.get("question_text"),
-                "answer_text": r.get("answer_text"),
-                "numeric_score": r.get("numeric_score"),
-            })
-
-        output = make_response(si.getvalue())
-        output.headers["Content-Disposition"] = f"attachment; filename=form_{form_id}_feedback.csv"
+        csv_text = build_csv_from_rows(rows)
+        output = make_response(csv_text)
+        suffix = ""
+        if sentiment in ("positive", "negative"):
+            suffix = f"_{sentiment}"
+        output.headers["Content-Disposition"] = f"attachment; filename=form_{form_id}_feedback{suffix}.csv"
         output.headers["Content-Type"] = "text/csv"
         return output
 
     except Exception as e:
         print("admin_reports_csv error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Failed to generate CSV report"}), 500
+
+
+# ================= REPORTS: CSV DOWNLOAD FOR ALL FORMS =================
+@app.route("/admin/reports/csv/all", methods=["GET"])
+def admin_reports_csv_all():
+    sentiment = request.args.get("sentiment")  # "positive", "negative" or None
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        where = ""
+        params = []
+        if sentiment in ("positive", "negative"):
+            where = "WHERE fr.overall_sentiment=%s"
+            params.append(sentiment)
+
+        cursor.execute(
+            f"""
+            SELECT
+              fr.id AS response_id,
+              fr.submitted_at,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fa.section_name,
+              fa.question_text,
+              fa.answer_text,
+              fa.numeric_score
+            FROM feedback_responses fr
+            JOIN feedback_answers fa ON fa.feedback_response_id = fr.id
+            {where}
+            ORDER BY fr.form_template_id, fr.submitted_at DESC, fa.section_name, fa.question_index
+            """,
+            tuple(params),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+
+        csv_text = build_csv_from_rows(rows)
+        output = make_response(csv_text)
+        suffix = ""
+        if sentiment in ("positive", "negative"):
+            suffix = f"_{sentiment}"
+        output.headers["Content-Disposition"] = f"attachment; filename=all_forms_feedback{suffix}.csv"
+        output.headers["Content-Type"] = "text/csv"
+        return output
+
+    except Exception as e:
+        print("admin_reports_csv_all error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Failed to generate CSV report"}), 500
+
+
+# ================= REPORTS: CSV DOWNLOAD FOR SELECTED FORMS =================
+@app.route("/admin/reports/csv/by-forms", methods=["GET"])
+def admin_reports_csv_by_forms():
+    form_ids_param = request.args.get("form_ids", "")
+    sentiment = request.args.get("sentiment")  # "positive", "negative" or None
+
+    if not form_ids_param:
+        return jsonify({"error": "form_ids is required"}), 400
+
+    try:
+        form_ids = [int(x) for x in form_ids_param.split(",") if x.strip()]
+    except ValueError:
+        return jsonify({"error": "Invalid form_ids"}), 400
+
+    if not form_ids:
+        return jsonify({"error": "No valid form_ids"}), 400
+
+    placeholders = ",".join(["%s"] * len(form_ids))
+    params = list(form_ids)
+
+    where = f"WHERE fr.form_template_id IN ({placeholders})"
+    if sentiment in ("positive", "negative"):
+        where += " AND fr.overall_sentiment=%s"
+        params.append(sentiment)
+
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            f"""
+            SELECT
+              fr.id AS response_id,
+              fr.submitted_at,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fa.section_name,
+              fa.question_text,
+              fa.answer_text,
+              fa.numeric_score
+            FROM feedback_responses fr
+            JOIN feedback_answers fa ON fa.feedback_response_id = fr.id
+            {where}
+            ORDER BY fr.form_template_id, fr.submitted_at DESC, fa.section_name, fa.question_index
+            """,
+            tuple(params),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+
+        csv_text = build_csv_from_rows(rows)
+        output = make_response(csv_text)
+        suffix = ""
+        if sentiment in ("positive", "negative"):
+            suffix = f"_{sentiment}"
+        output.headers["Content-Disposition"] = f"attachment; filename=selected_forms_feedback{suffix}.csv"
+        output.headers["Content-Type"] = "text/csv"
+        return output
+
+    except Exception as e:
+        print("admin_reports_csv_by_forms error:", e)
         try:
             cursor.close()
             db.close()
