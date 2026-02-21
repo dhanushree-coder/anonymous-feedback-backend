@@ -413,11 +413,12 @@ def list_form_templates():
     return jsonify(rows), 200
 
 # ================= ADMIN PUBLISHED FORMS LIST (for published.html) =================
+# ================= ADMIN PUBLISHED FORMS LIST (for published.html) =================
 @app.route("/admin/published-forms", methods=["GET"])
 def admin_published_forms():
     """
     Return all published form templates, optionally filtered by domain.
-    Uses existing 'status' column: status='published' means published.
+    We treat any non-draft status as published.
     """
     domain = request.args.get("domain")
 
@@ -429,7 +430,7 @@ def admin_published_forms():
                 """
                 SELECT id, domain, name, status, created_at, updated_at
                 FROM form_templates
-                WHERE status = 'published' AND domain = %s
+                WHERE status <> 'draft' AND domain = %s
                 ORDER BY updated_at DESC
                 """,
                 (domain,),
@@ -439,7 +440,7 @@ def admin_published_forms():
                 """
                 SELECT id, domain, name, status, created_at, updated_at
                 FROM form_templates
-                WHERE status = 'published'
+                WHERE status <> 'draft'
                 ORDER BY updated_at DESC
                 """
             )
@@ -456,6 +457,7 @@ def admin_published_forms():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= FORM TEMPLATE DELETE =================
 @app.route("/delete-form-template/<int:template_id>", methods=["DELETE"])
