@@ -1,3 +1,7 @@
+[build]
+nixpacksVersion = "1.18.0"
+
 [phases.setup]
 nixPkgs = ["wkhtmltopdf-bin"]
+
 
