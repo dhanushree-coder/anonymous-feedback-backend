@@ -17,11 +17,15 @@ import pdfkit  # for PDF generation
 
 from flask_cors import CORS
 
+from flask import Flask, request, jsonify, redirect, send_file, make_response, url_for
+from flask_cors import CORS
+# ... all your other imports ...
+
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": [
-    "https://dhanushree-coder.github.io",
-    "https://web-production-315e.up.railway.app"
-]}}, supports_credentials=False)
+
+# TEMP: allow all origins so GitHub Pages can call the API
+CORS(app, resources={r"/*": {"origins": "*"}})
+
 
 bcrypt = Bcrypt(app)
 
