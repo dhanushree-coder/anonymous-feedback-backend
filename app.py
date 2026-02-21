@@ -32,6 +32,17 @@ serializer = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 FEEDBACK_PER_IP_PER_HOUR = 10
 LOGIN_ATTEMPTS_PER_IP_PER_15MIN = 20
 
+# ---------- PDFKIT CONFIG ----------
+WKHTMLTOPDF_PATH = os.getenv("WKHTMLTOPDF_PATH", "/usr/bin/wkhtmltopdf")
+try:
+    if os.path.exists(WKHTMLTOPDF_PATH):
+        pdfkit_config = pdfkit.configuration(wkhtmltopdf=WKHTMLTOPDF_PATH)
+    else:
+        pdfkit_config = None
+except Exception:
+    pdfkit_config = None
+
+
 # ================= DATABASE =================
 def get_db_connection():
     return mysql.connector.connect(
@@ -43,10 +54,10 @@ def get_db_connection():
     )
 
 
-
 # ================= BASIC HELPERS (IP, HASH, ACTIVITY) =================
 def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 
 def get_client_ip():
     if "X-Forwarded-For" in request.headers:
@@ -54,6 +65,7 @@ def get_client_ip():
     else:
         ip = request.remote_addr or "0.0.0.0"
     return ip
+
 
 def record_ip_activity(ip_hash: str, endpoint: str):
     try:
@@ -72,6 +84,7 @@ def record_ip_activity(ip_hash: str, endpoint: str):
             db.close()
         except Exception:
             pass
+
 
 def count_ip_requests(ip_hash: str, endpoint: str, minutes: int) -> int:
     try:
@@ -98,6 +111,7 @@ def count_ip_requests(ip_hash: str, endpoint: str, minutes: int) -> int:
         except Exception:
             pass
 
+
 # ================= HELPER: send verification email =================
 def send_verification_email(email):
     token = serializer.dumps(email, salt="email-confirm")
@@ -117,6 +131,7 @@ def send_verification_email(email):
     response = sg.send(sg_msg)
     if response.status_code >= 400:
         raise RuntimeError(f"SendGrid error: {response.status_code} {response.body}")
+
 
 # ================= SIGNUP =================
 @app.route("/signup", methods=["POST"])
@@ -162,6 +177,7 @@ def signup():
     db.close()
     return jsonify({"success": True}), 200
 
+
 # ================= VERIFY =================
 @app.route("/verify/<token>")
 def verify_email(token):
@@ -186,6 +202,7 @@ def verify_email(token):
 
     return "Email verified successfully. You can close this tab and login in your app.", 200
 
+
 # ================= CHECK VERIFICATION STATUS =================
 @app.route("/check-verification", methods=["POST"])
 def check_verification():
@@ -206,6 +223,7 @@ def check_verification():
         return jsonify({"exists": False, "is_verified": None}), 200
 
     return jsonify({"exists": True, "is_verified": user["is_verified"]}), 200
+
 
 # ================= RESEND VERIFICATION EMAIL =================
 @app.route("/resend-verification", methods=["POST"])
@@ -236,6 +254,7 @@ def resend_verification():
         return jsonify({"error": "Failed to resend verification email"}), 500
 
     return jsonify({"success": True}), 200
+
 
 # ================= LOGIN =================
 @app.route("/login", methods=["POST"])
@@ -321,6 +340,7 @@ def login():
     db.close()
     return jsonify({"message": "Login successful"}), 200
 
+
 # ================= FORM TEMPLATE SAVE (CREATE / UPDATE) =================
 @app.route("/save-form-template", methods=["POST"])
 def save_form_template():
@@ -357,6 +377,7 @@ def save_form_template():
 
     return jsonify({"success": True, "id": template_id}), 200
 
+
 # ================= FORM TEMPLATE LOAD (BY ID) =================
 @app.route("/load-form-template", methods=["GET"])
 def load_form_template():
@@ -381,6 +402,7 @@ def load_form_template():
 
     return jsonify(obj), 200
 
+
 # ================= FORM TEMPLATE LIST (ALL DOMAINS) =================
 @app.route("/list-form-templates", methods=["GET"])
 def list_form_templates():
@@ -397,6 +419,7 @@ def list_form_templates():
 
     return jsonify(rows), 200
 
+
 # ================= FORM TEMPLATE DELETE =================
 @app.route("/delete-form-template/<int:template_id>", methods=["DELETE"])
 def delete_form_template(template_id):
@@ -408,6 +431,7 @@ def delete_form_template(template_id):
     db.close()
 
     return jsonify({"success": True}), 200
+
 
 # ================= PUBLIC FORM READ (SAFE VIEW) =================
 @app.route("/get-public-form/<int:template_id>", methods=["GET"])
@@ -443,6 +467,7 @@ def get_public_form(template_id):
     }
     return jsonify(safe), 200
 
+
 # ================= FEEDBACK SENTIMENT / BIAS HELPERS =================
 def classify_sentiment(overall_rating: int) -> str:
     if overall_rating <= 2:
@@ -450,6 +475,7 @@ def classify_sentiment(overall_rating: int) -> str:
     if overall_rating == 3:
         return "neutral"
     return "positive"
+
 
 def detect_biased_pattern(all_answers_text: str, overall_rating: int) -> bool:
     text_lower = all_answers_text.lower()
@@ -461,6 +487,7 @@ def detect_biased_pattern(all_answers_text: str, overall_rating: int) -> bool:
     rating_mismatch = overall_rating <= 2 and "good" in text_lower
 
     return short_negative or many_generic or rating_mismatch
+
 
 # ================= STRICT CHECK: FEEDBACK STATUS BY IP =================
 @app.route("/check-feedback-status", methods=["GET"])
@@ -487,6 +514,7 @@ def check_feedback_status():
     db.close()
 
     return jsonify({"already_submitted": count > 0}), 200
+
 
 # ================= SUBMIT FEEDBACK (ANONYMOUS) =================
 @app.route("/submit-feedback", methods=["POST"])
@@ -673,6 +701,7 @@ def submit_feedback():
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= SIMPLE ADMIN ANALYTICS (LEGACY) =================
 @app.route("/admin/form-summary/<int:form_id>", methods=["GET"])
 def form_summary(form_id):
@@ -716,6 +745,7 @@ def form_summary(form_id):
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= ADMIN FORMS SUMMARY (FOR DASHBOARD FORMS TAB) =================
 @app.route("/admin/forms-summary", methods=["GET"])
 def admin_forms_summary():
@@ -748,6 +778,7 @@ def admin_forms_summary():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= ADMIN RECENT FEEDBACKS (FOR HOME) =================
 @app.route("/admin/recent-feedbacks", methods=["GET"])
@@ -782,6 +813,7 @@ def admin_recent_feedbacks():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= ADMIN ALL FEEDBACKS (FOR FEEDBACKS TAB) =================
 @app.route("/admin/all-feedbacks", methods=["GET"])
@@ -841,6 +873,7 @@ def admin_all_feedbacks():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= FORM ANALYTICS SUMMARY (FOR form-analytics.html) =================
 @app.route("/admin/form-analytics/summary", methods=["GET"])
@@ -956,6 +989,7 @@ def admin_form_analytics_summary():
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= FORM ANALYTICS PATTERNS (KEYWORDS & SECTIONS) =================
 @app.route("/admin/form-analytics/patterns", methods=["GET"])
 def admin_form_analytics_patterns():
@@ -1028,6 +1062,7 @@ def admin_form_analytics_patterns():
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= ESTIMATED SUBMISSIONS SAVE =================
 @app.route("/admin/form-analytics/estimated", methods=["POST"])
 def admin_form_analytics_estimated():
@@ -1072,6 +1107,7 @@ def admin_form_analytics_estimated():
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= ADMIN USERS SUMMARY (FOR USERS TAB) =================
 @app.route("/admin/users-summary", methods=["GET"])
 def admin_users_summary():
@@ -1102,6 +1138,7 @@ def admin_users_summary():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= FEEDBACK DETAILS (FOR VIEW RESPONSE PAGE) =================
 @app.route("/admin/feedback/<int:response_id>", methods=["GET"])
@@ -1161,6 +1198,7 @@ def admin_feedback_details(response_id):
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= FEEDBACK SAVE FLAG =================
 @app.route("/admin/feedback/<int:response_id>/save", methods=["POST"])
 def admin_feedback_save(response_id):
@@ -1193,6 +1231,7 @@ def admin_feedback_save(response_id):
             pass
         return jsonify({"error": "Server error"}), 500
 
+
 # ================= FEEDBACK DELETE =================
 @app.route("/admin/feedback/<int:response_id>/delete", methods=["POST"])
 def admin_feedback_delete(response_id):
@@ -1218,6 +1257,7 @@ def admin_feedback_delete(response_id):
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= REPORTS: LIST FORMS WITH RESPONSES =================
 @app.route("/admin/reports/forms", methods=["GET"])
@@ -1255,6 +1295,7 @@ def admin_reports_forms():
         except Exception:
             pass
         return jsonify({"error": "Server error"}), 500
+
 
 # ================= REPORTS: PDF DOWNLOAD PER FORM =================
 @app.route("/admin/reports/<int:form_id>/pdf", methods=["GET"])
@@ -1336,13 +1377,17 @@ def admin_reports_pdf(form_id):
         html_parts.append("</style></head><body>")
 
         html_parts.append(f"<h1>Feedback Report - {form_row.get('name') or 'Form ' + str(form_id)}</h1>")
-        html_parts.append(f"<p class='small'>Form ID: {form_row['id']} | Domain: {form_row.get('domain') or '-'} | Status: {form_row.get('status')}</p>")
+        html_parts.append(
+            f"<p class='small'>Form ID: {form_row['id']} | Domain: {form_row.get('domain') or '-'} | Status: {form_row.get('status')}</p>"
+        )
         html_parts.append(f"<p>Date generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} (UTC)</p>")
 
         html_parts.append("<h2>Summary</h2>")
         html_parts.append("<table>")
         html_parts.append("<tr><th>Total Submissions</th><th>Average Rating</th><th>Positive</th><th>Neutral</th><th>Negative</th></tr>")
-        html_parts.append(f"<tr><td>{total}</td><td>{round(float(avg_rating), 2) if avg_rating else 0.0}</td><td>{positives}</td><td>{neutrals}</td><td>{negatives}</td></tr>")
+        html_parts.append(
+            f"<tr><td>{total}</td><td>{round(float(avg_rating), 2) if avg_rating else 0.0}</td><td>{positives}</td><td>{neutrals}</td><td>{negatives}</td></tr>"
+        )
         html_parts.append("</table>")
 
         html_parts.append("<h2>Recent Complaints & Negative Highlights</h2>")
@@ -1350,7 +1395,9 @@ def admin_reports_pdf(form_id):
             html_parts.append("<table>")
             html_parts.append("<tr><th>Rating</th><th>Summary</th></tr>")
             for c in complaints_rows:
-                html_parts.append(f"<tr><td>{c.get('overall_rating')}</td><td>{c.get('summary')}</td></tr>")
+                html_parts.append(
+                    f"<tr><td>{c.get('overall_rating')}</td><td>{c.get('summary')}</td></tr>"
+                )
             html_parts.append("</table>")
         else:
             html_parts.append("<p>No recorded complaints for this form.</p>")
@@ -1376,7 +1423,11 @@ def admin_reports_pdf(form_id):
 
         html_content = "".join(html_parts)
 
-        pdf = pdfkit.from_string(html_content, False)
+        if pdfkit_config is not None:
+            pdf = pdfkit.from_string(html_content, False, configuration=pdfkit_config)
+        else:
+            pdf = pdfkit.from_string(html_content, False)
+
         pdf_stream = io.BytesIO(pdf)
 
         filename = f"feedback_report_form_{form_id}.pdf"
@@ -1389,6 +1440,7 @@ def admin_reports_pdf(form_id):
     except Exception as e:
         print("admin_reports_pdf error:", e)
         return jsonify({"error": "Failed to generate PDF report"}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
