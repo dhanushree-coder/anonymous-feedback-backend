@@ -1286,8 +1286,13 @@ def admin_feedback_delete(response_id):
         return jsonify({"error": "Server error"}), 500
 
 # ================= REPORTS: LIST FORMS WITH RESPONSES =================
+# ================= REPORTS: LIST FORMS WITH RESPONSES =================
 @app.route("/admin/reports/forms", methods=["GET"])
 def admin_reports_forms():
+    """
+    Forms that are effectively 'published' (any non-draft status) and
+    have at least one submission, used in the Reports / Analytics tab.
+    """
     db = get_db_connection()
     cursor = db.cursor(dictionary=True)
     try:
@@ -1296,13 +1301,15 @@ def admin_reports_forms():
             SELECT
               ft.id,
               ft.name,
+              ft.status,
               COUNT(fr.id) AS total_submissions,
               AVG(fr.overall_rating) AS avg_rating
             FROM form_templates ft
-            JOIN feedback_responses fr ON fr.form_template_id = ft.id
-            WHERE ft.status = 'published'
-            GROUP BY ft.id, ft.name
-            HAVING total_submissions > 0
+            LEFT JOIN feedback_responses fr
+              ON fr.form_template_id = ft.id
+            WHERE ft.status <> 'draft'
+            GROUP BY ft.id, ft.name, ft.status
+            HAVING COUNT(fr.id) > 0
             ORDER BY ft.updated_at DESC
             """
         )
