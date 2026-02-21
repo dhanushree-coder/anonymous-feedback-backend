@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect, send_file
+from flask import Flask, request, jsonify, redirect, send_file, make_response
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -8,6 +8,7 @@ import json
 import hashlib
 from datetime import datetime
 import io
+import csv
 
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail as SGMail
@@ -1297,7 +1298,7 @@ def admin_reports_forms():
         return jsonify({"error": "Server error"}), 500
 
 
-# ================= REPORTS: PDF DOWNLOAD PER FORM =================
+# ================= REPORTS: PDF DOWNLOAD PER FORM (kept but not used in UI) =================
 @app.route("/admin/reports/<int:form_id>/pdf", methods=["GET"])
 def admin_reports_pdf(form_id):
     db = get_db_connection()
@@ -1440,6 +1441,84 @@ def admin_reports_pdf(form_id):
     except Exception as e:
         print("admin_reports_pdf error:", e)
         return jsonify({"error": "Failed to generate PDF report"}), 500
+
+
+# ================= REPORTS: CSV DOWNLOAD PER FORM =================
+@app.route("/admin/reports/<int:form_id>/csv", methods=["GET"])
+def admin_reports_csv(form_id):
+    db = get_db_connection()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            "SELECT id, name FROM form_templates WHERE id=%s",
+            (form_id,),
+        )
+        form_row = cursor.fetchone()
+        if not form_row:
+            cursor.close()
+            db.close()
+            return jsonify({"error": "Form not found"}), 404
+
+        cursor.execute(
+            """
+            SELECT
+              fr.id AS response_id,
+              fr.submitted_at,
+              fr.overall_rating,
+              fr.overall_sentiment,
+              fa.section_name,
+              fa.question_text,
+              fa.answer_text,
+              fa.numeric_score
+            FROM feedback_responses fr
+            JOIN feedback_answers fa ON fa.feedback_response_id = fr.id
+            WHERE fr.form_template_id=%s
+            ORDER BY fr.submitted_at DESC, fa.section_name, fa.question_index
+            """,
+            (form_id,),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        db.close()
+
+        si = io.StringIO()
+        fieldnames = [
+            "response_id",
+            "submitted_at",
+            "overall_rating",
+            "overall_sentiment",
+            "section_name",
+            "question_text",
+            "answer_text",
+            "numeric_score",
+        ]
+        writer = csv.DictWriter(si, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({
+                "response_id": r.get("response_id"),
+                "submitted_at": r.get("submitted_at"),
+                "overall_rating": r.get("overall_rating"),
+                "overall_sentiment": r.get("overall_sentiment"),
+                "section_name": r.get("section_name"),
+                "question_text": r.get("question_text"),
+                "answer_text": r.get("answer_text"),
+                "numeric_score": r.get("numeric_score"),
+            })
+
+        output = make_response(si.getvalue())
+        output.headers["Content-Disposition"] = f"attachment; filename=form_{form_id}_feedback.csv"
+        output.headers["Content-Type"] = "text/csv"
+        return output
+
+    except Exception as e:
+        print("admin_reports_csv error:", e)
+        try:
+            cursor.close()
+            db.close()
+        except Exception:
+            pass
+        return jsonify({"error": "Failed to generate CSV report"}), 500
 
 
 if __name__ == "__main__":
