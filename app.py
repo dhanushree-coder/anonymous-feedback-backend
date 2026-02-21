@@ -15,8 +15,14 @@ from sendgrid.helpers.mail import Mail as SGMail
 
 import pdfkit  # for PDF generation
 
+from flask_cors import CORS
+
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": [
+    "https://dhanushree-coder.github.io",
+    "https://web-production-315e.up.railway.app"
+]}}, supports_credentials=False)
+
 bcrypt = Bcrypt(app)
 
 # ================= CONFIG =================
